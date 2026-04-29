@@ -1,0 +1,12 @@
+name: C10 Simple
+on:
+  push:
+    branches: [c10-oidc]
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "hello"
