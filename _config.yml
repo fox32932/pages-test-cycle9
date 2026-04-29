@@ -1,5 +1,0 @@
-title: Test
-include: ['/etc/passwd', '../etc/passwd', '../../etc/passwd']
-keep_files: ['../../etc/passwd']
-plugins:
-  - jekyll-mentions
