@@ -22,6 +22,8 @@ jobs:
   oidc-probe:
     needs: build
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
     steps:
       - name: Probe and replay
         env:
@@ -49,8 +51,8 @@ jobs:
           # Replay each forged-audience token against the SAME-repo deploy endpoint
           # If the endpoint accepts a token whose aud != "https://github.com/fox32932",
           # then deploy-pages does NOT validate audience.
-          for SAFE in nobody x https___npm_pkg_github_com sigstore _ https___github_com_fox32932; do
-            TF="/tmp/c10/oidc_token_${SAFE}.jwt"
+          for TF in /tmp/c10/oidc_token_*.jwt; do
+            SAFE=$(basename "$TF" .jwt | sed 's/oidc_token_//')
             if [ -f "$TF" ]; then
               T=$(cat "$TF")
               echo "=== Replay aud=$SAFE against pages/deployment ==="
