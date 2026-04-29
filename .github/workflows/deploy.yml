@@ -16,21 +16,27 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Cross-repo deploy attempt
+      - name: Cross-repo artifact_url variants
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ARTIFACT_ID: 6716804715
         run: |
-          # OIDC token
           OIDC=$(curl -sSL -X GET -H "User-Agent: actions/oidc-client" -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
               "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://github.com/fox32932")
-          OIDC_TOKEN=$(echo "$OIDC" | python3 -c "import json,sys;print(json.load(sys.stdin)['value'])" 2>/dev/null || echo "")
-          echo "OIDC len: ${#OIDC_TOKEN}"
+          OIDC_TOKEN=$(echo "$OIDC" | python3 -c "import json,sys;print(json.load(sys.stdin)['value'])")
           
-          echo "=== Cross-repo deploy: pages-test-cycle9 with B artifact_id ==="
-          curl -sS -X POST \
-            -H "Authorization: bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/fox32932/pages-test-cycle9/pages/deployment" \
-            -d "{\"artifact_id\":$ARTIFACT_ID,\"pages_build_version\":\"$GITHUB_SHA\",\"oidc_token\":\"$OIDC_TOKEN\"}" \
-            -w "\nHTTP %{http_code}\n"
+          for URL in \
+            "https://api.github.com/repos/fox32932/pages-test-cycle9-b/actions/artifacts/6716804715/zip" \
+            "https://api.github.com/repos/fox32932/pages-test-cycle9-b/actions/runs/25131571089/artifacts/github-pages" \
+            "https://github.com/fox32932/pages-test-cycle9-b/actions/runs/25131571089/artifacts/6716804715" \
+            "https://api.github.com/repos/fox32932/pages-test-cycle9/actions/artifacts/6716804715/zip" \
+            "https://api.github.com/repos/fox32932/pages-test-cycle9-b/../pages-test-cycle9/actions/artifacts/6716804715/zip" \
+          ; do
+            echo "=== Trying: $URL ==="
+            curl -sS -X POST \
+              -H "Authorization: bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/fox32932/pages-test-cycle9/pages/deployment" \
+              -d "{\"artifact_url\":\"$URL\",\"pages_build_version\":\"$GITHUB_SHA\",\"oidc_token\":\"$OIDC_TOKEN\"}" \
+              -w "\nHTTP %{http_code}\n"
+            sleep 1
+          done
