@@ -1,3 +1,3 @@
-# YAML aliases for safe deserialization probe
-example: !!str "from data"
-loop: &a [*a]
+example: from_data
+nested:
+  key: value
